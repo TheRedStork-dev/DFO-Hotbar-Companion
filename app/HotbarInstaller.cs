@@ -142,10 +142,15 @@ public sealed class HotbarInstaller
         return new InstallResult(version, true);
     }
 
-    public void LaunchDfo()
+    public void LaunchDfo(bool scannerEnabled = false)
     {
         if (!File.Exists(DfoExe)) throw new InvalidOperationException("DFO Online could not be found.");
-        Process.Start(new ProcessStartInfo(DfoExe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(DfoExe)! });
+        Process.Start(new ProcessStartInfo(DfoExe)
+        {
+            Arguments = scannerEnabled ? $"--remote-debugging-port={DfoDevToolsBridge.DebugPort} --remote-debugging-address=127.0.0.1" : "",
+            UseShellExecute = true,
+            WorkingDirectory = Path.GetDirectoryName(DfoExe)!
+        });
     }
 
     private bool CanReuse(string version, string asar)

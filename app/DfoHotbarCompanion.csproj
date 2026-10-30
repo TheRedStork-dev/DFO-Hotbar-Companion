@@ -3,10 +3,12 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net7.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>DFO Hotbar Companion</AssemblyName>
     <RootNamespace>DfoHotbarCompanion</RootNamespace>
+    <Version>0.2.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="hotbar-pages.patch" />

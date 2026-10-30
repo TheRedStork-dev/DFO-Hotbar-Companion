@@ -1,0 +1,5 @@
+*.patch text eol=lf
+*.cs text eol=crlf
+*.xaml text eol=crlf
+
+

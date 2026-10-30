@@ -1,0 +1,343 @@
+diff --git a/src/systems/inputActions.js b/src/systems/inputActions.js
+index 9e9c3cbe..080d7969 100644
+--- a/src/systems/inputActions.js
++++ b/src/systems/inputActions.js
+@@ -208,6 +208,9 @@ export const ACTIONS = Object.freeze([
+   // The decorator. Ships with no key: every letter is spent, and F1-F4 are the browser's or already bound.
+   // A player gives it one in Controls. It answers only where the Decorate button would stand.
+   'Decorate',
++  // HBP1: bank switching. They ship unbound because the keyboard is full;
++  // players choose keys or controller buttons in Controls.
++  'HotbarPrevious', 'HotbarNext',
+ ]);
+ 
+ /** AUDIT SOC D3: THE PORT'S OWN ROWS, NAMED SO THE CLASSIC WINDOWS CAN YIELD THEM.
+@@ -225,7 +228,8 @@ export const PORT_ACTIONS = Object.freeze(['SocialInteract', 'QuickUse1', 'Quick
+   'TorchToggleLight', 'TorchDrop', 'TorchThrow', 'ShoulderSwitch', 'AutoPerspective', 'FollowPaths', 'HorseMount', 'HorseSummon', 'DebugOverlay',
+   'BoatDisembark', 'BoatToggleLight', 'BoatToggleSail', 'BoatTrimRight', 'BoatTrimLeft', 'BoatTrimModifier',
+   'BoatTimeScaleUp', 'BoatTimeScaleDown', 'BoatTimeScaleReset', 'TravelView', 'WalkMode', 'TogglePerspective', 'ActChoice', 'BoatSailUp', 'BoatSailDown', 'Professions',
+-  'LegacyFamily', 'ModeWheel', 'WeaponTechnique', 'Spyglass', 'SaddlePanel', 'ShipHold', 'ShotCycle', 'PartyPing', 'Decorate']);   // PARTY-PING: the party's ping   // the decorator, unbound   // SHOT-KINDS: the guns' load   // CARGO-ANYWHERE: the ship's hold   // SPYGLASS: the captain's glass   // TECH1: the weapon's technique   // LEGACY1: Project Legacy's family tree; MODE-WHEEL: the mode wheel   // KB1; TV1; PADWALK; VIEW-TOGGLE; PROF1   // QUICK-LOOT B4: the plaque's two, drawn in the enhanced pane under their own heading - the classic windows cannot draw them at all
++  'LegacyFamily', 'ModeWheel', 'WeaponTechnique', 'Spyglass', 'SaddlePanel', 'ShipHold', 'ShotCycle', 'PartyPing', 'Decorate',
++  'HotbarPrevious', 'HotbarNext']);   // HBP1: the hotbar banks, unbound   // PARTY-PING: the party's ping   // the decorator, unbound   // SHOT-KINDS: the guns' load   // CARGO-ANYWHERE: the ship's hold   // SPYGLASS: the captain's glass   // TECH1: the weapon's technique   // LEGACY1: Project Legacy's family tree; MODE-WHEEL: the mode wheel   // KB1; TV1; PADWALK; VIEW-TOGGLE; PROF1   // QUICK-LOOT B4: the plaque's two, drawn in the enhanced pane under their own heading - the classic windows cannot draw them at all
+ 
+ const ACTION_SET = new Set(ACTIONS);
+ 
+@@ -578,6 +582,7 @@ export const ACTION_GROUPS = Object.freeze([
+     ['QuickOffHand', 'Off hand: light, douse or swap / hotbar slot 4'], ['QuickSwap', 'Swap weapon'],
+     ['Hotbar5', 'Hotbar slot 5'], ['Hotbar6', 'Hotbar slot 6'], ['Hotbar7', 'Hotbar slot 7'], ['Hotbar8', 'Hotbar slot 8'],
+     ['Hotbar9', 'Hotbar slot 9'], ['Hotbar10', 'Hotbar slot 10'],
++    ['HotbarPrevious', 'Previous hotbar page'], ['HotbarNext', 'Next hotbar page'],
+   ]),
+   g('Mouse', [
+     ['ActivateCursor', 'Free the mouse (offline) / open chat (online)'], ['FreeMouse', 'Free the mouse (press again to look)'],
+diff --git a/src/systems/quickslots.js b/src/systems/quickslots.js
+index 08ac8c1d..3170fb09 100644
+--- a/src/systems/quickslots.js
++++ b/src/systems/quickslots.js
+@@ -187,7 +187,14 @@ export function assignQuickslot(slot, item) {
+ }
+ 
+ export function clearQuickslot(slot) { assertSlot(slot); state[slot] = null; }
+-export function clearQuickslots() { for (const s of QUICKSLOTS) state[s] = null; spellState = null; hotbarSets.main.fill(null); hotbarRev++; }   // HB1: the hotbar clears with them (a load, a new character)   // QS6: the spell slot is a slot too
++export function clearQuickslots() {
++  for (const s of QUICKSLOTS) state[s] = null;
++  spellState = null;
++  for (const page of hotbarPages) page.fill(null);
++  hotbarPage = 0;
++  if (hotbar !== hotbarSets.pvp) hotbar = hotbarPages[hotbarPage];
++  hotbarRev++;
++}   // HB1: the hotbar clears with them (a load, a new character)   // QS6: the spell slot is a slot too
+ 
+ /** The slot this item's kind is in, or null. The tooltip's buttons
+  *  read it to show "Unslot" on the one that holds the item. */
+@@ -905,9 +912,14 @@ export function quickslotSaveData() {
+   out.spell = spellState ? { index: spellState.index, name: spellState.name } : null;
+   // HB1: and the hotbar, on the same block - ten entries, each an item
+   // kind or a spell index, exactly as the slots above key them.
+-  out.hotbar = hotbarSets.main.map((e) => (e ? { ...e } : null));   // PVP-SET: the save keeps the normal set alone
++  out.hotbar = hotbarPages[0].map((e) => (e ? { ...e } : null));
+   // PADPLUS1: the crossbar's six extra slots ride only when one is filled - a keyboard player's save is the ten it was
+   if (out.hotbar.slice(HOTBAR_SIZE).every((e) => !e)) out.hotbar.length = HOTBAR_SIZE;
++  // HBP1: page one keeps the old `hotbar` key, so an older build can still
++  // read it. Extra pages and the selected page are additive and therefore a
++  // pre-pages save migrates without ceremony.
++  out.hotbarPages = hotbarPages.slice(1).map(trimHotbarPage);
++  out.hotbarPage = hotbarPage;
+   return out;
+ }
+ 
+@@ -922,16 +934,12 @@ export function restoreQuickslotSaveData(data) {
+   if (sp && Number.isFinite(sp.index) && typeof sp.name === 'string') spellState = { index: sp.index, name: sp.name };
+   // HB1: the hotbar. A save written before it carries no block and the
+   // bar clears, as the slots above do for a pre-QS save.
+-  if (Array.isArray(data.hotbar)) {
+-    data.hotbar.slice(0, HOTBAR_CAPACITY).forEach((e, i) => {
+-      if (!e || typeof e !== 'object' || typeof e.name !== 'string') return;
+-      if (e.type === 'spell' && Number.isFinite(e.index)) hotbarSets.main[i] = { type: 'spell', index: e.index, name: e.name, ...iconOf(e) };   // UI2: and its icon
+-      else if (e.type === 'item' && typeof e.key === 'string' && HOTBAR_KINDS.includes(e.kind)) {
+-        hotbarSets.main[i] = { type: 'item', kind: e.kind, key: e.key, name: e.name };
+-        if (OLD_BOOK_KEY.test(e.key)) _oldBookKeys = true;
+-      }
+-    });
+-  }
++  restoreHotbarPage(hotbarPages[0], data.hotbar);
++  if (Array.isArray(data.hotbarPages)) data.hotbarPages.slice(0, HOTBAR_PAGE_COUNT - 1)
++    .forEach((page, i) => restoreHotbarPage(hotbarPages[i + 1], page));
++  hotbarPage = Number.isInteger(data.hotbarPage) && data.hotbarPage >= 0 && data.hotbarPage < HOTBAR_PAGE_COUNT
++    ? data.hotbarPage : 0;
++  if (hotbar !== hotbarSets.pvp) hotbar = hotbarPages[hotbarPage];
+   hotbarRev++;
+ }
+ 
+@@ -964,23 +972,28 @@ export const HOTBAR_SIZE = 10;
+  *  and RB) is the same bar, grown: slots 1-10 are the keyboard's 1-0 and the crossbar's first ten, slots 11-16 are
+  *  the crossbar's alone. One model, so a potion dragged on with the mouse is on the pad's bar too, and one save. */
+ export const HOTBAR_CAPACITY = 16;
++/** HBP1: four independent banks. The keyboard row uses the first ten slots
++ * of the selected bank; Enhanced Plus' crossbar uses all sixteen. */
++export const HOTBAR_PAGE_COUNT = 4;
+ // KB1: the key each slot answers to is its REGISTRY action's (systems/inputActions.js HOTBAR_SLOT_ACTIONS), not a
+ // table here - the fixed Digit1-Digit0 list this held was a second keymap beside the controls pane's.
+ // PVP-SET (ui/pvpSpellMenu.js): the bar has two sets of the same slots. The PvP set is in force while my flag is up in
+ // the zone; it holds toolkit spells ('kit' entries) and items, never a book spell. The save keeps the normal set alone.
+-const hotbarSets = Object.freeze({ main: new Array(HOTBAR_CAPACITY).fill(null), pvp: new Array(HOTBAR_CAPACITY).fill(null) });
+-let hotbar = hotbarSets.main;
++const hotbarPages = Array.from({ length: HOTBAR_PAGE_COUNT }, () => new Array(HOTBAR_CAPACITY).fill(null));
++const hotbarSets = Object.freeze({ main: hotbarPages[0], pvp: new Array(HOTBAR_CAPACITY).fill(null) });
++let hotbarPage = 0;
++let hotbar = hotbarPages[hotbarPage];
+ let hotbarRev = 0;   // bumped on every write, so a view can tell "changed" in one compare
+ /** PVP-SET: the set in force, 'main' or 'pvp'. */
+ export const hotbarSetName = () => (hotbar === hotbarSets.pvp ? 'pvp' : 'main');
+ export function useHotbarSet(name) {
+-  const want = name === 'pvp' ? hotbarSets.pvp : hotbarSets.main;
++  const want = name === 'pvp' ? hotbarSets.pvp : hotbarPages[hotbarPage];
+   if (want !== hotbar) { hotbar = want; hotbarRev++; }
+ }
+ /** PVP-SET: a copy of a set's entries, and a whole set written back (a restore: no lock asked). */
+-export const hotbarSetEntries = (name) => (name === 'pvp' ? hotbarSets.pvp : hotbarSets.main).map((e) => (e ? { ...e, ...(e.kit ? { kit: { ...e.kit } } : {}) } : null));
++export const hotbarSetEntries = (name) => (name === 'pvp' ? hotbarSets.pvp : hotbarPages[hotbarPage]).map((e) => (e ? { ...e, ...(e.kit ? { kit: { ...e.kit } } : {}) } : null));
+ export function restoreHotbarSet(name, entries) {
+-  const set = name === 'pvp' ? hotbarSets.pvp : hotbarSets.main;
++  const set = name === 'pvp' ? hotbarSets.pvp : hotbarPages[hotbarPage];
+   for (let i = 0; i < HOTBAR_CAPACITY; i++) set[i] = null;
+   (Array.isArray(entries) ? entries : []).slice(0, HOTBAR_CAPACITY).forEach((e, i) => { set[i] = settled(e, set === hotbarSets.pvp); });
+   hotbarRev++;
+@@ -993,6 +1006,24 @@ const frozen = () => { try { return hotbar === hotbarSets.pvp && !!setLock(); }
+ let kitPress = /** @type {null | ((i: number, kit: any) => string)} */ (null);
+ export function setHotbarKitPress(fn) { kitPress = typeof fn === 'function' ? fn : null; }
+ 
++const trimHotbarPage = (page) => {
++  const out = page.map((e) => (e ? { ...e } : null));
++  while (out.length > HOTBAR_SIZE && !out[out.length - 1]) out.pop();
++  return out;
++};
++
++function restoreHotbarPage(page, saved) {
++  if (!Array.isArray(saved)) return;
++  saved.slice(0, HOTBAR_CAPACITY).forEach((e, i) => {
++    if (!e || typeof e !== 'object' || typeof e.name !== 'string') return;
++    if (e.type === 'spell' && Number.isFinite(e.index)) page[i] = { type: 'spell', index: e.index, name: e.name, ...iconOf(e) };
++    else if (e.type === 'item' && typeof e.key === 'string' && HOTBAR_KINDS.includes(e.kind)) {
++      page[i] = { type: 'item', kind: e.kind, key: e.key, name: e.name };
++      if (OLD_BOOK_KEY.test(e.key)) _oldBookKeys = true;
++    }
++  });
++}
++
+ export const HOTBAR_TEXT = Object.freeze({
+   emptySlot: 'That hotbar slot is empty.',
+   offHandFull: 'Your off hand is full.',
+@@ -1087,6 +1118,22 @@ const assertHot = (i) => { if (!Number.isInteger(i) || i < 0 || i >= HOTBAR_CAPA
+ /** A copy of slot i's entry, or null. */
+ export const hotbarEntry = (i) => (assertHot(i), hotbar[i] ? { ...hotbar[i] } : null);
+ export const hotbarRevision = () => hotbarRev;
++export const activeHotbarPage = () => hotbarPage;
++
++/** Select a bank directly, or move through them with wraparound. */
++export function setHotbarPage(page) {
++  if (!Number.isInteger(page) || page < 0 || page >= HOTBAR_PAGE_COUNT) return false;
++  if (page === hotbarPage) return true;
++  hotbarPage = page;
++  if (hotbar !== hotbarSets.pvp) hotbar = hotbarPages[hotbarPage];
++  hotbarRev++;
++  return true;
++}
++export function cycleHotbarPage(dir = 1) {
++  const step = dir < 0 ? -1 : 1;
++  setHotbarPage((hotbarPage + step + HOTBAR_PAGE_COUNT) % HOTBAR_PAGE_COUNT);
++  return hotbarPage;
++}
+ 
+ /** Put an entry on slot i. ONE KIND LIVES IN ONE SLOT, as the diamond's
+  *  two consumables do: the same kind anywhere else on the bar is MOVED
+@@ -1103,7 +1150,12 @@ export function setHotbarSlot(i, entry) {
+ }
+ 
+ export function clearHotbarSlot(i) { assertHot(i); if (hotbar[i] && !frozen()) { hotbar[i] = null; hotbarRev++; } }
+-export function clearHotbar() { if (frozen()) return; hotbar.fill(null); hotbarRev++; _oldBookKeys = false; }
++export function clearHotbar() {
++  if (frozen()) return;
++  hotbar.fill(null);
++  hotbarRev++;
++  _oldBookKeys = false;
++}
+ 
+ /** Two slots trade places - the drag from one filled slot onto another. */
+ export function swapHotbarSlots(a, b) {
+@@ -1139,10 +1191,12 @@ function rekeyOldBooks(entity) {
+   const pack = packOf(entity);
+   if (!pack.length) return;
+   _oldBookKeys = false;
+-  for (const e of hotbar) {
+-    if (e?.type !== 'item' || !OLD_BOOK_KEY.test(e.key)) continue;
+-    const it = pack.find((x) => x?.templateIndex === BOOK_TEMPLATE && itemLongName(x) === e.name && quickslotKey({ ...x, message: undefined }) === e.key);
+-    if (it) { e.key = quickslotKey(it); hotbarRev++; }
++  for (const page of hotbarPages) {
++    for (const e of page) {
++      if (e?.type !== 'item' || !OLD_BOOK_KEY.test(e.key)) continue;
++      const it = pack.find((x) => x?.templateIndex === BOOK_TEMPLATE && itemLongName(x) === e.name && quickslotKey({ ...x, message: undefined }) === e.key);
++      if (it) { e.key = quickslotKey(it); hotbarRev++; }
++    }
+   }
+ }
+ 
+diff --git a/src/ui/enhanced/enhancedHotbar.js b/src/ui/enhanced/enhancedHotbar.js
+index c73fc1a6..ff1d50a1 100644
+--- a/src/ui/enhanced/enhancedHotbar.js
++++ b/src/ui/enhanced/enhancedHotbar.js
+@@ -45,7 +45,7 @@ import { quickslotTag } from '../quickslotTags.js';   // KB1: a slot's chip name
+ import {
+   HOTBAR_SIZE, HOTBAR_TEXT, hotbarView, hotbarRevision, hotbarPress, hotbarReady,
+   hotbarEntryForItem, hotbarEntryForSpell, setHotbarSlot, clearHotbarSlot, swapHotbarSlots, hotbarEntry,
+-  hotbarSlotOf, firstFreeHotbarSlot, hotbarKindOf,
++  hotbarSlotOf, firstFreeHotbarSlot, hotbarKindOf, HOTBAR_PAGE_COUNT, activeHotbarPage, setHotbarPage, cycleHotbarPage,
+ } from '../../systems/quickslots.js';
+ import { hotbarSetName } from '../../systems/quickslots.js';   // PVP-SET
+ import { shownSpellName } from '../../systems/loot/loot.js';   // L10N3e: a spell's name as the book shows it
+@@ -108,6 +108,7 @@ let slots = [];          // per slot: { node, icon, glyph, count, key, wear, wea
+ let caption = null;
+ let hint = null;
+ let pvpBtn = null;   // PVP-SET
++let pageStrip = null;
+ let dock = null;         // the HUD's own place for it
+ let quadDock = null;     // DIAMOND-HB: HUD container for the diamond layout (bottom-left)
+ let barShape = 'row';    // DIAMOND-HB: current layout: 'row', 'xb' (crossbar) or 'quad' (diamond)
+@@ -376,6 +377,19 @@ function build() {
+   bar.setAttribute('aria-label', 'Hotbar');
+   caption = el('div', 'hb-caption');
+   caption.setAttribute('aria-live', 'polite');
++  pageStrip = el('div', 'hb-pages');
++  pageStrip.setAttribute('aria-label', 'Hotbar pages');
++  for (let page = 0; page < HOTBAR_PAGE_COUNT; page++) {
++    const b = el('button', 'hb-page', String(page + 1));
++    b.type = 'button';
++    b.dataset.page = String(page);
++    b.setAttribute('aria-label', `Hotbar page ${page + 1}`);
++    b.addEventListener('click', (e) => {
++      e.preventDefault(); e.stopPropagation();
++      choosePage(page);
++    });
++    pageStrip.append(b);
++  }
+   const row = el('div', 'hb-row');
+   slots = [];
+   for (let i = 0; i < HOTBAR_CAPACITY; i++) {   // PADPLUS1: sixteen nodes; the row shows ten, the crossbar all
+@@ -410,7 +424,7 @@ function build() {
+   pvpBtn = el('button', 'hb-pvpbtn');   // PVP-SET: the PvP menu's door on the bar
+   pvpBtn.type = 'button';
+   pvpBtn.addEventListener('click', (e) => { e.stopPropagation(); openHotbarSecondSet(); });
+-  bar.append(caption, row, hint, pvpBtn);
++  bar.append(caption, pageStrip, row, hint, pvpBtn);
+ }
+ 
+ /** The HUD hands the bar its place in play: the bottom column, above the
+@@ -497,12 +511,19 @@ function paint() {
+   const pvp = secondOn();
+   if (second) raiseSync();   // PVP-SET: the menu's raise
+   bar.classList.toggle('hb-pvp', pvp);
++  if (pageStrip) pageStrip.hidden = pvp;
+   const label = pvp ? String(second.label?.() ?? '') : '';
+   if (pvpBtn && pvpBtn.textContent !== label) pvpBtn.textContent = label;
+   const hintText = (pvp && dropping && second.hint?.()) || (hand ? (xbOn ? PAD_ARRANGE_TEXT.hintHand : PAD_ARRANGE_TEXT.hintHandRow) : arranging ? PAD_ARRANGE_TEXT.hint
+     : xbOn ? HINT_XB : editing ? HINT_EDIT : HINT_DROP);   // PAD-ARRANGE; PVP-SET: the menu's own
+   if (hint && hint.textContent !== hintText) hint.textContent = hintText;
+   if (!shown) return;
++  const activePage = activeHotbarPage();
++  pageStrip?.querySelectorAll('.hb-page').forEach((b, page) => {
++    const on = page === activePage;
++    b.classList.toggle('on', on);
++    b.setAttribute('aria-pressed', on ? 'true' : 'false');
++  });
+   const entity = dropping ? (dropEntity ?? liveEntity) : liveEntity;
+   const readiedIndex = liveOpts.readied?.index ?? null;
+   const view = hotbarView(entity, { readiedIndex, size: HOTBAR_CAPACITY });
+@@ -729,6 +750,22 @@ function showCaption(text, bad = false) {
+ /** UXB1-S: the slot a key's actions name - the first of them that is one, so a SHARED key (a slot and anything else)
+  *  still presses its slot. -1 when none is. */
+ const slotOfActions = (acts) => acts.map((a) => HOTBAR_SLOT_ACTIONS.indexOf(a)).find((i) => i >= 0) ?? -1;
++const pageStepOfActions = (acts) => acts.includes('HotbarPrevious') ? -1 : acts.includes('HotbarNext') ? 1 : 0;
++function choosePage(page) {
++  if (hotbarSetName() === 'pvp') return false;
++  if (!setHotbarPage(page)) return false;
++  lastSig = null;
++  showCaption(`Hotbar ${activeHotbarPage() + 1}/${HOTBAR_PAGE_COUNT}`);
++  paint();
++  return true;
++}
++function stepPage(dir) {
++  if (hotbarSetName() === 'pvp') return false;
++  cycleHotbarPage(dir);
++  lastSig = null;
++  showCaption(`Hotbar ${activeHotbarPage() + 1}/${HOTBAR_PAGE_COUNT}`);
++  paint();
++}
+ // AUDIT POI E1: THE BAR'S KEYS HELD. Its listener is on the window's capture phase from the HUD's first frame, so a
+ // surface that owns the keyboard later (the POI editor, scenes/world.js) cannot stop it with its own - under the editor
+ // a digit used the body's item or spell, and was stopped before the UV dialog's 1-4 ever reached it. A hold stands the
+@@ -762,7 +799,14 @@ function onKey(e) {
+   // someone else held - a table of its own beside the controls pane's. The slot is whatever the key MEANS now: a
+   // player who moved slot 7 to a mouse button, or a pad's d-pad on slots 1-4, presses it; a digit bound to anything
+   // else is simply not a slot.
+-  const i = slotOfActions(eventActions(e));   // AUDIT KB1: the event's own read - a listener writes no latch
++  const acts = eventActions(e);
++  const pageStep = pageStepOfActions(acts);
++  if (pageStep) {
++    e.preventDefault(); e.stopImmediatePropagation();
++    if (!e.repeat) stepPage(pageStep);
++    return;
++  }
++  const i = slotOfActions(acts);   // AUDIT KB1: the event's own read - a listener writes no latch
+   if (i < 0 || i >= hotbarSize()) return;   // DIAMOND-HB: only keys of shown slots (1-4 for the diamond)
+   // The hotbar owns the digit: no host ladder below may read it too
+   // (keys 1-4 are the diamond's by default, and the diamond is put away).
+@@ -783,7 +827,14 @@ function onMouse(e) {
+   if (typeof document === 'undefined' || !document.pointerLockElement) return;
+   const code = mouseCode(e.button);
+   if (!code) return;
+-  const i = slotOfActions(eventActions({ code, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, altKey: e.altKey }));
++  const acts = eventActions({ code, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, altKey: e.altKey });
++  const pageStep = pageStepOfActions(acts);
++  if (pageStep) {
++    e.preventDefault(); e.stopImmediatePropagation();
++    stepPage(pageStep);
++    return;
++  }
++  const i = slotOfActions(acts);
+   if (i < 0 || i >= hotbarSize()) return;   // DIAMOND-HB
+   e.preventDefault();
+   e.stopImmediatePropagation();   // the hosts' mousedown (the swing, the activate) never sees a button a slot took
+@@ -1255,6 +1306,12 @@ export const HOTBAR_CSS = `
+   font-family: ${PIXEL_STACK}; -webkit-font-smoothing: none; font-variant-ligatures: none;
+   color: var(--bone, #e9e4d9); pointer-events: none; }
+ .hb.on { display: flex; }
++.hb-pages { display: flex; align-items: center; gap: 3px; margin-bottom: 4px; pointer-events: none; }
++.hb-page { box-sizing: border-box; min-width: 20px; height: 17px; padding: 0 5px; border: 1px solid rgba(125,116,96,0.45);
++  background: rgba(10,12,17,0.78); color: #a89f88; font: 11px/15px ${PIXEL_STACK}; text-shadow: 1px 1px 0 #000; }
++.hb-page.on { border-color: var(--brass, #c08a3e); color: #f1d49a; background: rgba(54,42,24,0.88); }
++.hb.editing .hb-pages, .hb.dropping .hb-pages { pointer-events: auto; }
++.hb.editing .hb-page, .hb.dropping .hb-page { cursor: pointer; }
+ /* HB1b (Discord: "make only the blocks 1-0 visible, not the whole frame"):
+    NO PANEL. The ten sockets stand on the world by themselves, each with
+    its own shadow so it reads over snow and grass alike. */
+
